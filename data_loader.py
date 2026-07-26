@@ -36,9 +36,9 @@ def download_dataset(
             for split in ["train", "val", "test"]:
                 origin_path_year_split = f"Aeolus/Flight_chain/chain_data_{year}/{split}_flight_chain_{year}.pt"
                 final_path = os.path.join(
-                                    output_dir_seq + str(year), f"{split}_flight_chain_{year}.pt"
-                                )
-                if os.path.exists(final_path): 
+                    output_dir_seq + str(year), f"{split}_flight_chain_{year}.pt"
+                )
+                if os.path.exists(final_path):
                     print(f"Path {final_path} already exists! Skipping it")
                     continue
                 dest_path_year = kagglehub.dataset_download(
@@ -65,18 +65,31 @@ def read_dataset_pandas(
     print("All done.")
     return df
 
-def load_dataset_pytorch(year, file_path= "data/chain/"): # for sequential when directly available
-    split_types = ["train", "val", "test"] 
+
+def load_dataset_pytorch(
+    year, file_path="data/chain/"
+):  # for sequential when directly available
+    split_types = ["train", "val", "test"]
 
     loaded_data = {}
 
     for split in split_types:
-        full_file_path = file_path+ f"{year}/{split}_flight_chain_{year}.pt"
-        loaded_data[split] = torch.load(full_file_path, weights_only=False)
+        full_file_path = file_path + f"{year}/{split}_flight_chain_{year}.pt"
+        # loaded_data[split] = torch.load(full_file_path, weights_only=False)
+        dataset = torch.load(full_file_path, weights_only=False)
+
+        # Slice dense tensor to remove the last feature (FLIGHTS), which is always equal to 1
+        dense = dataset.tensors[0]  # [N, seq_len, 7]
+        dense = dense[
+            :, :, :-1
+        ].clone()  # now [N, seq_len, 6]. Clone to make sure not even the last column is copied into RAM
+        # Rebuild dataset with the same other tensors
+        loaded_data[split] = TensorDataset(dense, *dataset.tensors[1:])
 
         print(f"--- Read file: (split: {split}, year: {year}) ---")
 
     return loaded_data
+
 
 def remove_outliers_percentile(df, columns, lower=0.01, upper=0.99):  # good practice
     n_rows_before = len(df)
