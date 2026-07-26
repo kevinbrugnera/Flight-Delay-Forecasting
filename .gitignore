@@ -2,3 +2,4 @@ Material/
 .venv/
 __pycache__/
 .ipynb_checkpoints/
+*processed_data*
