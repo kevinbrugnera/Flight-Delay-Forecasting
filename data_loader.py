@@ -13,7 +13,7 @@ import shutil
 
 def download_dataset(
     year_start,
-    year_end_exd,
+    year_end_exd,  # end year (excluded)
     origin_path="flnny123/mfddmulti-modal-flight-delay-dataset/versions/4",
     mode="tabular",  # or "sequential" for pre-made chains
     output_dir_seq="data/chain/",
@@ -22,7 +22,7 @@ def download_dataset(
     dest_paths = []
     for year in range(year_start, year_end_exd):
         print(f"Downloading year {year} data...")
-        if mode == "tabular":
+        if mode == "tabular":  # tabular dataset download
             origin_path_year = (
                 "Aeolus/Flight_Tab/flight_with_weather_" + str(year) + ".csv"
             )
@@ -32,15 +32,21 @@ def download_dataset(
             dest_paths.append(dest_path_year)
 
         # dest_path_year = dest_path+'flight_with_weather_'+str(year)+'.csv' # destination path
-        elif mode == "sequential":
+        elif mode == "sequential":  # sequential (chains) dataset download
             for split in ["train", "val", "test"]:
-                origin_path_year_split = f"Aeolus/Flight_chain/chain_data_{year}/{split}_flight_chain_{year}.pt"
+                if year == 2024:
+                    origin_path_year_split = f"Aeolus/Flight_chain/chain_data_{year}/flight_chain_{split}_{year}.pt"
+                # different naming convention in original dataset
+                else:
+                    origin_path_year_split = f"Aeolus/Flight_chain/chain_data_{year}/{split}_flight_chain_{year}.pt"
+
                 final_path = os.path.join(
                     output_dir_seq + str(year), f"{split}_flight_chain_{year}.pt"
                 )
                 if os.path.exists(final_path):
                     print(f"Path {final_path} already exists! Skipping it")
                     continue
+
                 dest_path_year = kagglehub.dataset_download(
                     origin_path, path=origin_path_year_split
                 )
@@ -66,29 +72,54 @@ def read_dataset_pandas(
     return df
 
 
-def load_dataset_pytorch(
-    year, file_path="data/chain/"
-):  # for sequential when directly available
+
+def load_dataset_pytorch(year_start, year_end, file_path="data/chain/"):
+    """
+    Load sequential chain datasets for years in [year_start, year_end) and merge
+    all years into a single dataset per split (train, val, test).
+    """
     split_types = ["train", "val", "test"]
+    loaded_data = {split: [] for split in split_types}  # store lists of tensors
 
-    loaded_data = {}
+    for year in range(year_start, year_end):
+        for split in split_types:
+            full_file_path = file_path + f"{year}/{split}_flight_chain_{year}.pt"
+            dataset = torch.load(full_file_path, weights_only=False)
+            # n_samples_to_inspect = 3
 
+            # for i in range(n_samples_to_inspect):
+            #     sample = dataset[i]
+            #     print(f"--- Sample {i} ---")
+            #     for j, tensor in enumerate(sample):
+            #         print(f"  tensors[{j}] shape: {tensor.shape}, dtype: {tensor.dtype}")
+            #         print(f"  tensors[{j}] values:\n{tensor}\n")
+            #     print("=" * 60)
+
+            # Slice dense tensor to remove FLIGHTS (last column)
+            dense = dataset.tensors[0]  # [N, seq_len, 7]
+            dense = dense[:, :, :-1].clone()  # [N, seq_len, 6]
+
+            # Rebuild dataset (other tensors unchanged)
+            processed = TensorDataset(dense, *dataset.tensors[1:])
+            loaded_data[split].append(processed)
+            print(f"--- Read file: (split: {split}, year: {year}) ---")
+
+    # Concatenate all years for each split
+    merged = {}
     for split in split_types:
-        full_file_path = file_path + f"{year}/{split}_flight_chain_{year}.pt"
-        # loaded_data[split] = torch.load(full_file_path, weights_only=False)
-        dataset = torch.load(full_file_path, weights_only=False)
+        # Gather all tensors from each dataset in the list
+        all_dense = torch.cat([ds.tensors[0] for ds in loaded_data[split]], dim=0)
+        all_sparse = torch.cat([ds.tensors[1] for ds in loaded_data[split]], dim=0)
+        all_labels = torch.cat([ds.tensors[2] for ds in loaded_data[split]], dim=0)
+        all_lens = torch.cat([ds.tensors[3] for ds in loaded_data[split]], dim=0)
+        all_delays = torch.cat([ds.tensors[4] for ds in loaded_data[split]], dim=0)
 
-        # Slice dense tensor to remove the last feature (FLIGHTS), which is always equal to 1
-        dense = dataset.tensors[0]  # [N, seq_len, 7]
-        dense = dense[
-            :, :, :-1
-        ].clone()  # now [N, seq_len, 6]. Clone to make sure not even the last column is copied into RAM
-        # Rebuild dataset with the same other tensors
-        loaded_data[split] = TensorDataset(dense, *dataset.tensors[1:])
+        merged[split] = TensorDataset(
+            all_dense, all_sparse, all_labels, all_lens, all_delays
+        )
+        print(f"--- Merged {split}: {all_dense.shape[0]} samples across years ---")
 
-        print(f"--- Read file: (split: {split}, year: {year}) ---")
-
-    return loaded_data
+    return merged
 
 
 def remove_outliers_percentile(df, columns, lower=0.01, upper=0.99):  # good practice
